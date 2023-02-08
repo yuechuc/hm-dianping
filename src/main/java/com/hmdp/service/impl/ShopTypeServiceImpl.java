@@ -54,10 +54,6 @@ public class ShopTypeServiceImpl extends ServiceImpl<ShopTypeMapper, ShopType> i
         //把结果写入redis
         stringRedisTemplate.opsForList().rightPushAll(SHOP_TYPE_KEY,resList);
         //返回结果
-        //
-        //
-        //
-
         return Result.ok(shopTypes);
     }
 }
