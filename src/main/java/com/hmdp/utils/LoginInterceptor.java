@@ -27,7 +27,7 @@ public class LoginInterceptor implements HandlerInterceptor {
         //1. 从请求头获取token
         if (UserHolder.getUser() == null) {
             response.setStatus(401);
-            log.info("error 111111111");
+            log.info("未登录");
             return false;
         }
         return true;
