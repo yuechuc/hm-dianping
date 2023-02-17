@@ -1,7 +1,6 @@
 package com.hmdp.service.impl;
 
 import com.hmdp.dto.Result;
-import com.hmdp.entity.SeckillVoucher;
 import com.hmdp.entity.VoucherOrder;
 import com.hmdp.mapper.VoucherOrderMapper;
 import com.hmdp.service.ISeckillVoucherService;
@@ -18,10 +17,13 @@ import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import javax.annotation.PostConstruct;
 import javax.annotation.Resource;
-import java.time.LocalDateTime;
 import java.util.Collections;
-import java.util.function.ToDoubleBiFunction;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * <p>
@@ -44,24 +46,72 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     private IVoucherOrderService voucherOrderService;
 
 
-     private SimpleRedisLock simpleRedisLock;
+    private SimpleRedisLock simpleRedisLock;
 
     @Resource
     private StringRedisTemplate stringRedisTemplate;
 
 
     @Resource
-    private  RedisIdWorker redisIdWorker;
+    private RedisIdWorker redisIdWorker;
     // 提前加载脚本
 
 
     private static final DefaultRedisScript<Long> SECKILL_SCRIPT;
+
     static {
         SECKILL_SCRIPT = new DefaultRedisScript<>();
         SECKILL_SCRIPT.setLocation(new ClassPathResource("seckill.lua"));
         SECKILL_SCRIPT.setResultType(Long.class);
     }
 
+
+    private BlockingQueue<VoucherOrder> orderTasks = new ArrayBlockingQueue<>(1024 * 1024);
+    private static final ExecutorService SECKILL_ORDER_EXECUTOR = Executors.newSingleThreadExecutor();
+
+
+    @PostConstruct
+    private void init() {
+        SECKILL_ORDER_EXECUTOR.submit(new VoucherOrderHandler());
+    }
+
+    private class VoucherOrderHandler implements Runnable {
+
+        @Override
+        public void run() {
+            while (true) {
+                try {
+                    VoucherOrder voucherOrder = orderTasks.take();
+
+                    handleVoucherOrder(voucherOrder);
+                } catch (Exception e) {
+                    log.error("处理订单异常", e);
+                }
+            }
+        }
+    }
+
+    private void handleVoucherOrder(VoucherOrder voucherOrder) {
+        Long userId = voucherOrder.getUserId();
+        // 创建锁对象
+        SimpleRedisLock lock = new SimpleRedisLock(stringRedisTemplate, "order:" + userId);
+
+        boolean isLock = lock.tryLock(1200);
+        log.info(String.valueOf(isLock));
+        if (!isLock) {
+            log.error("请勿重复下单");
+            return;
+        }
+
+        // 获取代理对象（事务）
+        try {
+            proxy.createVoucherOrder(voucherOrder);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private IVoucherOrderService proxy;
 
     @Override
     public Result seckillVoucher(Long voucherId) {
@@ -74,15 +124,26 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
                 userId.toString()
         );
         // 2. 判断结果是为0
-        if (result.intValue() != 0) {
+        int r = result.intValue();
+        if (r != 0) {
             // 2.1.不为0，代表没有购买资格
             return Result.fail(result == 1 ? "库存不足" : "不能重复下单");
         }
 
-        long orderId = redisIdWorker.nextId("order");
 
         // 2.2.为0，有购买资格，把下单信息保存到阻塞队列
-        //TODO 保存到阻塞队列
+        VoucherOrder voucherOrder = new VoucherOrder();
+        // 订单id
+        long orderId = redisIdWorker.nextId("order");
+        voucherOrder.setId(orderId);
+        // userid
+        voucherOrder.setUserId(userId);
+        // 优惠券id
+        voucherOrder.setVoucherId(voucherId);
+        // 放入阻塞队列
+        orderTasks.add(voucherOrder);
+
+        proxy = (IVoucherOrderService) AopContext.currentProxy();
 
         //  3. 返回订单id
         return Result.ok(orderId);
@@ -131,15 +192,17 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
 
     @Transactional
-    public Result createVoucherOrder(Long voucherId) {
+    public void createVoucherOrder(VoucherOrder voucherOrder) {
         // 一人一单，限购
         // 查询订单
-        Long userId = UserHolder.getUser().getId();
-        int count = query().eq("user_id", userId).eq("voucher_id", voucherId).count();
+        // Long userId = UserHolder.getUser().getId();
+        Long userId = voucherOrder.getUserId();
+        int count = query().eq("user_id", userId).eq("voucher_id", voucherOrder.getVoucherId()).count();
         // 判断是否存在
         if (count > 0) {
             // 已存在订单
-            return Result.fail("限购数量为：1！");
+            log.error("限购数量为：1！");
+            return;
         }
 
         // 不存在，扣减库存
@@ -154,24 +217,17 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         boolean success = seckillVoucherService.update()
                 // 乐观锁-->解决库存超卖
                 .setSql("stock=stock-1")  // set stock = stock -1
-                .eq("voucher_id", voucherId).gt("stock", 0)  // where voucher_id = ? and stock > 0
+                .eq("voucher_id", voucherOrder.getVoucherId()).gt("stock", 0)  // where voucher_id = ? and stock > 0
                 .update();
         if (!success) {
-            return Result.fail("库存不足！");
+            log.error("库存不足！");
+            return;
         }
 
 
         // 创建订单
-        VoucherOrder voucherOrder = new VoucherOrder();
-        long orderId = idWorker.nextId("order");
-        voucherOrder.setId(orderId);
-        // Long userId = UserHolder.getUser().getId();
-        voucherOrder.setUserId(userId);
-        voucherOrder.setVoucherId(voucherId);
-        voucherOrderService.save(voucherOrder);
-        // 返回订单
+        save(voucherOrder);
 
-        return Result.ok(orderId);
 
     }
 }
