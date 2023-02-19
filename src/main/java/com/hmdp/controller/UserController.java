@@ -1,6 +1,7 @@
 package com.hmdp.controller;
 
 
+import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.core.util.RandomUtil;
 import com.hmdp.dto.LoginFormDTO;
 import com.hmdp.dto.Result;
@@ -52,7 +53,10 @@ public class UserController {
     @PostMapping("/login")
     public Result login(@RequestBody LoginFormDTO loginForm, HttpSession session){
         //  实现登录功能
-        return userService.login(loginForm,session);
+        Result login = userService.login(loginForm, session);
+        String token = (String) login.getData();
+        userService.login(loginForm,session);
+        return Result.ok(token);
     }
 
     /**
@@ -61,8 +65,8 @@ public class UserController {
      */
     @PostMapping("/logout")
     public Result logout(){
-        // TODO 实现登出功能
-        return Result.fail("功能未完成");
+        UserHolder.removeUser();
+        return Result.ok();
     }
 
     @GetMapping("/me")
@@ -85,4 +89,16 @@ public class UserController {
         // 返回
         return Result.ok(info);
     }
+    @GetMapping("/{id}")
+    public Result queryUserById(@PathVariable("id") Long userId){
+        // 查询详情
+        User user = userService.getById(userId);
+        if (user == null) {
+            return Result.ok();
+        }
+        UserDTO userDTO = BeanUtil.copyProperties(user, UserDTO.class);
+        // 返回
+        return Result.ok(userDTO);
+    }
+
 }

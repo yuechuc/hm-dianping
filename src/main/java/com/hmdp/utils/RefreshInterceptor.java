@@ -17,11 +17,11 @@ import static com.hmdp.utils.RedisConstants.LOGIN_USER_KEY;
 import static com.hmdp.utils.RedisConstants.LOGIN_USER_TTL;
 
 @Slf4j
-public class ReFreshInterceptor implements HandlerInterceptor {
+public class RefreshInterceptor implements HandlerInterceptor {
 
     private StringRedisTemplate stringRedisTemplate;
 
-    public ReFreshInterceptor(StringRedisTemplate stringRedisTemplate) {
+    public RefreshInterceptor(StringRedisTemplate stringRedisTemplate) {
         this.stringRedisTemplate = stringRedisTemplate;
     }
 
@@ -33,10 +33,10 @@ public class ReFreshInterceptor implements HandlerInterceptor {
             return true;
         }
         //2.获取session中的用户
-        String key = LOGIN_USER_KEY + token;
+        String key  = LOGIN_USER_KEY + token;
         Map<Object, Object> userMap = stringRedisTemplate.opsForHash().entries(key);
-        //3. 判断用户是否存在
-        if (userMap.isEmpty()){
+        // 3.判断用户是否存在
+        if (userMap.isEmpty()) {
             return true;
         }
 

@@ -6,6 +6,8 @@ import com.hmdp.service.impl.ShopServiceImpl;
 import com.hmdp.utils.CacheClient;
 import com.hmdp.utils.RedisIdWorker;
 import org.junit.jupiter.api.Test;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 
@@ -31,6 +33,8 @@ class HmDianPingApplicationTests {
 
     @Resource
     private CacheClient cacheClient;
+    @Resource
+    private RedissonClient redissonClient;
 
     // 写入逻辑过期时间
     @Test
@@ -60,5 +64,19 @@ class HmDianPingApplicationTests {
         latch.await();
         long end = System.currentTimeMillis();
         System.out.println("time="+(end-begin));
+    }
+
+    @Test
+    void testRedisson() throws InterruptedException {
+
+        RLock lock = redissonClient.getLock("anylock");
+        boolean isLock = lock.tryLock(1, 10, TimeUnit.SECONDS);
+        if (isLock) {
+            try {
+                System.out.println("excuting");
+            } finally {
+                lock.unlock();
+            }
+        }
     }
 }
